@@ -35,7 +35,7 @@ const HeroSection = () => {
             glowColor="rgba(255, 255, 255, 0.08)"
           />
           {/* Optional gradient overlay */}
-          <div className="absolute inset-0 bg-[linear-gradient(to_bottom,transparent_65%,#0a0a0a_95%)] z-5"></div>
+          <div className="absolute inset-0 bg-[linear-gradient(to_bottom,transparent_40%,#0a0a0a_90%)] z-5"></div>
         </motion.div>
 
         <div className="relative z-10 flex w-full max-w-7xl mx-auto items-center justify-center px-4 sm:px-6 lg:px-8 py-16 lg:py-24">
@@ -77,7 +77,7 @@ const HeroSection = () => {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: 0.6, ease: "easeOut" }}
-                className="w-7xl h-auto no-scrollbar rounded-lg mt-10 border border-white/20 bg-neutral-900 shadow-2xl shadow-neutral-600/20"
+                className="w-7xl h-auto no-scrollbar rounded-lg mt-10 border border-white/20 bg-neutral-900 drop-shadow-[0px_0px_60px_rgba(63,217,183,0.1)]"
                 style={{
                   maxHeight: "97vh",
                   overflowY: "hidden",
