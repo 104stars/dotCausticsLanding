@@ -18,7 +18,6 @@ const parseRgba = (rgba) => {
 
 // --- Component ---
 const DotWaveBackground = ({
-  // --- Existing Props ---
   dotColor = 'rgba(115, 115, 115, 0.5)',
   dotSize = 1,
   dotSpacing = 30,
@@ -30,33 +29,46 @@ const DotWaveBackground = ({
   opacityVariation = 0.3,
   peakColorShift = { r: 20, g: 20, b: 30 },
   initialRandomness = 0.8,
-
-  // --- Glow Effect Props ---
   glowIntensityThreshold = 0.95,
   glowProbability = 0.03,
   glowRadiusMultiplier = 4,
   glowColor = 'rgba(255, 255, 255, 0.08)',
-  glowBlurRadius = 4, // <-- NEW: Add blur radius prop with a default
+  glowBlurRadius = 0,
 }) => {
   const canvasRef = useRef(null);
   const animationFrameId = useRef(null);
   const baseColor = useRef(parseRgba(dotColor));
   const noise3D = useMemo(() => createNoise3D(), []);
   const [randomOffsets, setRandomOffsets] = useState(new Map());
+  const lastTimeRef = useRef(0);
+  const throttleInterval = 1000 / 30; // Target 30fps
 
+  // Pre-calculate expensive values
+  const totalSineAmplitude = amplitude1 + amplitude2;
+  const maxPossibleAmplitude = totalSineAmplitude + noiseAmplitude;
+  const halfMaxPossibleAmplitude = maxPossibleAmplitude * 0.5;
+
+  // Memoize color parsing
+  const glowColorParsed = useMemo(() => parseRgba(glowColor), [glowColor]);
+
+  // Optimized random offsets generation
   useEffect(() => {
     const safeMargin = 1.5;
     const maxDim = Math.max(window.innerWidth, window.innerHeight) * safeMargin;
     const maxCols = Math.ceil(maxDim / dotSpacing) + 2;
-    const maxRows = Math.ceil(maxDim / dotSpacing) + 2;
+    const maxRows = Math.ceil(maxCols / 2) * 2; // Ensure even number for symmetry
 
     const offsets = new Map();
-    for (let i = -maxCols / 2; i < maxCols / 2; i++) {
-      for (let j = -maxRows / 2; j < maxRows / 2; j++) {
+    const halfCols = maxCols / 2;
+    const halfRows = maxRows / 2;
+    
+    for (let i = -halfCols; i < halfCols; i++) {
+      for (let j = -halfRows; j < halfRows; j++) {
         const key = `${i},${j}`;
+        const rand = (Math.random() - 0.5) * 2 * initialRandomness;
         offsets.set(key, {
-          x: (Math.random() - 0.5) * 2 * initialRandomness,
-          y: (Math.random() - 0.5) * 2 * initialRandomness,
+          x: rand,
+          y: rand * 0.8, // Slightly different but correlated y offset
         });
       }
     }
@@ -76,140 +88,135 @@ const DotWaveBackground = ({
     let width = 0;
     let height = 0;
     let time = 0;
+    let dotsToRender = [];
+    let glowDotsToRender = [];
 
     const { r: baseR, g: baseG, b: baseB, a: baseOpacity } = baseColor.current;
     const peakR = Math.min(255, baseR + peakColorShift.r);
     const peakG = Math.min(255, baseG + peakColorShift.g);
     const peakB = Math.min(255, baseB + peakColorShift.b);
-    const totalSineAmplitude = amplitude1 + amplitude2;
-    const maxPossibleAmplitude = totalSineAmplitude + noiseAmplitude;
 
-    // Store original filter state (good practice, usually 'none')
     const originalFilter = ctx.filter;
 
     const resizeHandler = () => {
-        width = canvas.width = canvas.offsetWidth * window.devicePixelRatio;
-        height = canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-        canvas.style.width = `${canvas.offsetWidth}px`;
-        canvas.style.height = `${canvas.offsetHeight}px`;
-        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      width = canvas.width = canvas.offsetWidth;
+      height = canvas.height = canvas.offsetHeight;
     };
 
+    const drawDots = (timestamp) => {
+      if (!lastTimeRef.current || timestamp - lastTimeRef.current >= throttleInterval) {
+        lastTimeRef.current = timestamp;
+        
+        // Clear canvas
+        ctx.clearRect(0, 0, width, height);
+        
+        const cols = Math.ceil(width / dotSpacing) + 4;
+        const rows = Math.ceil(height / dotSpacing) + 4;
+        const offsetX = (width - (cols - 2) * dotSpacing) / 2;
+        const offsetY = (height - (rows - 2) * dotSpacing) / 2;
 
-    const drawDots = () => {
-      // Clear canvas, respecting devicePixelRatio scaling
-      ctx.save(); // Save the current state (including transformation matrix)
-      ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to clear properly
-      ctx.clearRect(0, 0, width, height);
-      ctx.restore(); // Restore the scaled state
+        time += 1;
+        
+        // Reset arrays
+        dotsToRender = [];
+        glowDotsToRender = [];
 
-      const cols = Math.ceil(width / window.devicePixelRatio / dotSpacing) + 4; // Adjusted calculation for scaled canvas
-      const rows = Math.ceil(height / window.devicePixelRatio / dotSpacing) + 4;
-      const scaledOffsetX = (width / window.devicePixelRatio - (cols - 2) * dotSpacing) / 2;
-      const scaledOffsetY = (height / window.devicePixelRatio - (rows - 2) * dotSpacing) / 2;
+        // First pass: collect all dots to render
+        for (let i = -2; i < cols - 2; i++) {
+          for (let j = -2; j < rows - 2; j++) {
+            const key = `${i},${j}`;
+            const randOffset = randomOffsets.get(key) || { x: 0, y: 0 };
+            const baseX = i * dotSpacing + offsetX + randOffset.x;
+            const baseY = j * dotSpacing + offsetY + randOffset.y;
 
+            // Calculate displacements
+            const phase1 = (baseX * frequencyX1 + baseY * frequencyY1 + time * speed1);
+            const phase2 = (baseX * frequencyX2 + baseY * frequencyY2 + time * speed2);
+            const sineDisplacement = Math.sin(phase1) * amplitude1 + Math.sin(phase2) * amplitude2;
+            const noiseVal = noise3D(baseX * noiseFrequency, baseY * noiseFrequency, time * noiseSpeed);
+            const noiseDisplacement = noiseVal * noiseAmplitude;
+            const totalDisplacement = sineDisplacement + noiseDisplacement;
+            
+            // Optimized intensity calculation
+            const normalizedDisplacement = (totalDisplacement + maxPossibleAmplitude) / (2 * maxPossibleAmplitude);
+            const effectIntensity = Math.max(0, Math.min(1, normalizedDisplacement));
+            
+            // Perspective effect
+            const perspectiveScale = lerp(1, 1 - perspectiveFactor, baseY / height);
+            const currentSize = Math.max(0.1, (dotSize + (dotSize * sizeVariation * effectIntensity)) * perspectiveScale);
+            const currentOpacity = lerp(Math.max(0, baseOpacity - opacityVariation), baseOpacity, effectIntensity);
+            const r = Math.round(lerp(baseR, peakR, effectIntensity));
+            const g = Math.round(lerp(baseG, peakG, effectIntensity));
+            const b = Math.round(lerp(baseB, peakB, effectIntensity));
+            const drawY = baseY + totalDisplacement;
 
-      time += 1; // Increment time for animation
+            // Check for glow
+            if (effectIntensity > glowIntensityThreshold && Math.random() < glowProbability) {
+              glowDotsToRender.push({
+                x: baseX,
+                y: drawY,
+                radius: currentSize * glowRadiusMultiplier
+              });
+            }
 
-      for (let i = -2; i < cols - 2; i++) { // Adjust loop bounds for buffer
-        for (let j = -2; j < rows - 2; j++) {
-          const key = `${i},${j}`;
-          const randOffset = randomOffsets.get(key) || { x: 0, y: 0 };
-          // Use scaled offsets for calculations based on CSS pixels
-          const baseX = i * dotSpacing + scaledOffsetX + randOffset.x;
-          const baseY = j * dotSpacing + scaledOffsetY + randOffset.y;
-
-
-          // --- Calculate Displacements, Perspective, Intensity (Steps 1-5) ---
-          const phase1 = (baseX * frequencyX1 + baseY * frequencyY1 + time * speed1);
-          const phase2 = (baseX * frequencyX2 + baseY * frequencyY2 + time * speed2);
-          const sineDisplacement = Math.sin(phase1) * amplitude1 + Math.sin(phase2) * amplitude2;
-          const noiseTime = time * noiseSpeed;
-          const noiseVal = noise3D(baseX * noiseFrequency, baseY * noiseFrequency, noiseTime);
-          const noiseDisplacement = noiseVal * noiseAmplitude;
-          const totalDisplacement = sineDisplacement + noiseDisplacement;
-          const perspectiveScale = lerp(1, 1 - perspectiveFactor, baseY / (height / window.devicePixelRatio)); // Use scaled height
-          const normalizedDisplacement = (totalDisplacement + maxPossibleAmplitude) / (2 * maxPossibleAmplitude);
-          const effectIntensity = Math.max(0, Math.min(1, normalizedDisplacement));
-
-          // --- Calculate Base Dot Properties (Steps 6-9) ---
-          const baseModulatedSize = dotSize + (dotSize * sizeVariation * effectIntensity);
-          const currentSize = Math.max(0.1, baseModulatedSize * perspectiveScale);
-          const minOpacity = Math.max(0, baseOpacity - opacityVariation);
-          const currentOpacity = lerp(minOpacity, baseOpacity, effectIntensity);
-          const r = Math.round(lerp(baseR, peakR, effectIntensity));
-          const g = Math.round(lerp(baseG, peakG, effectIntensity));
-          const b = Math.round(lerp(baseB, peakB, effectIntensity));
-          const drawY = baseY + totalDisplacement;
-
-          // --- Draw Glow/Sparkle (Step before main dot) ---
-          if (effectIntensity > glowIntensityThreshold && Math.random() < glowProbability) {
-              const glowRadius = currentSize * glowRadiusMultiplier;
-
-              // *** Apply Blur ***
-              ctx.filter = `blur(${glowBlurRadius}px)`;
-
-              ctx.fillStyle = glowColor;
-              ctx.beginPath();
-              ctx.arc(baseX, drawY, glowRadius, 0, Math.PI * 2);
-              ctx.fill();
-
-              // *** Reset Blur IMPORTANT! ***
-              ctx.filter = originalFilter; // Reset to default ('none' or whatever it was)
-
-          } else {
-             // Ensure filter is off if not glowing (belt-and-suspenders)
-             if (ctx.filter !== originalFilter) {
-                 ctx.filter = originalFilter;
-             }
+            dotsToRender.push({
+              x: baseX,
+              y: drawY,
+              radius: currentSize,
+              color: `rgba(${r}, ${g}, ${b}, ${currentOpacity})`
+            });
           }
+        }
 
-
-          // --- Draw Main Dot (Step 10) ---
-          // Make sure filter is reset before drawing the main dot
-          if (ctx.filter !== originalFilter) {
-               ctx.filter = originalFilter;
+        // Render glow dots first
+        if (glowDotsToRender.length > 0) {
+          ctx.filter = `blur(${glowBlurRadius}px)`;
+          ctx.fillStyle = `rgba(${glowColorParsed.r}, ${glowColorParsed.g}, ${glowColorParsed.b}, ${glowColorParsed.a})`;
+          
+          for (const dot of glowDotsToRender) {
+            ctx.beginPath();
+            ctx.arc(dot.x, dot.y, dot.radius, 0, Math.PI * 2);
+            ctx.fill();
           }
+          
+          ctx.filter = originalFilter;
+        }
 
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${currentOpacity})`;
+        // Render regular dots
+        for (const dot of dotsToRender) {
+          ctx.fillStyle = dot.color;
           ctx.beginPath();
-          ctx.arc(baseX, drawY, currentSize, 0, Math.PI * 2);
+          ctx.arc(dot.x, dot.y, dot.radius, 0, Math.PI * 2);
           ctx.fill();
         }
       }
+      
       animationFrameId.current = requestAnimationFrame(drawDots);
     };
 
-    // Initial setup and start animation
-    resizeHandler(); // Call initially to set size and scale
+    // Initial setup
+    resizeHandler();
     window.addEventListener('resize', resizeHandler);
     animationFrameId.current = requestAnimationFrame(drawDots);
 
     return () => {
       window.removeEventListener('resize', resizeHandler);
-      if (animationFrameId.current) {
-        cancelAnimationFrame(animationFrameId.current);
-      }
-      // Reset filter on cleanup (just in case)
-      if (ctx) {
-        ctx.filter = originalFilter;
-      }
+      cancelAnimationFrame(animationFrameId.current);
+      ctx.filter = originalFilter;
     };
-  }, [ // --- Add ALL props to dependency array ---
+  }, [
     dotColor, dotSize, dotSpacing, amplitude1, frequencyX1, frequencyY1, speed1,
     amplitude2, frequencyX2, frequencyY2, speed2, noiseAmplitude, noiseFrequency,
     noiseSpeed, perspectiveFactor, sizeVariation, opacityVariation, peakColorShift,
-    initialRandomness, noise3D, randomOffsets,
-    // Glow props:
-    glowIntensityThreshold, glowProbability, glowRadiusMultiplier, glowColor,
-    glowBlurRadius // <-- Add new prop here
+    initialRandomness, noise3D, randomOffsets, glowIntensityThreshold, glowProbability,
+    glowRadiusMultiplier, glowColor, glowBlurRadius, glowColorParsed,
+    totalSineAmplitude, maxPossibleAmplitude, halfMaxPossibleAmplitude
   ]);
 
   return (
     <canvas
       ref={canvasRef}
       className="absolute top-0 left-0 w-full h-full z-0"
-      // style={{ imageRendering: 'pixelated' }} // Optional: if you want crisp pixels even when scaled
     />
   );
 };
